@@ -134,6 +134,46 @@ jobs:
           EOF
           ls -l vendorsetup.sh fox_ares.mk
 
+      - name: 加装解密守卫（能解就解，不能解就自动锁死）
+        if: ${{ inputs.disable_crypto == false }}
+        run: |
+          set -x
+          if [ "${{ inputs.variant }}" = "ofox" ]; then D=$HOME/fox_12.1; else D=$HOME/rec; fi
+          cd $D/device/xiaomi/ares
+          mkdir -p recovery/root/system/bin
+          cat > recovery/root/system/bin/ares-crypto-guard.sh <<'EOS'
+          #!/system/bin/sh
+          # 判定 ROM 的 keymaster 代际：
+          #   AIDL keymint 在（A15/A16）→ 我们这套 HIDL keymaster@4.0 解不开它的 key blob，
+          #   直接把自己删掉，让解密起不来（不碰 /data、不碰 key blob = 绝对安全）
+          #   只有 HIDL keymaster 时代（A13 一类）→ 放开解密
+          LOG=/tmp/ares-crypto-guard.log
+          echo "guard run $(date)" >> $LOG
+          if ls /vendor/bin/hw 2>/dev/null | grep -qiE 'keymint' \
+             || grep -qiE 'keymint' /vendor/etc/vintf/manifest.xml 2>/dev/null; then
+              echo "-> vendor is AIDL keymint: LOCK (remove our HIDL keymaster)" >> $LOG
+              rm -f /system/bin/android.hardware.keymaster@4.0-service.beanpod
+              rm -f /system/bin/android.hardware.keymaster@4.0-service.mitee
+              rm -f /system/bin/android.hardware.gatekeeper@1.0-service
+              stop android.hardware.keymaster@4.0-service.beanpod 2>/dev/null
+              stop android.hardware.keymaster@4.0-service.mitee 2>/dev/null
+              echo "locked" > /tmp/ares-crypto-locked
+          else
+              echo "-> vendor looks HIDL keymaster: ALLOW decryption" >> $LOG
+          fi
+          EOS
+          chmod 755 recovery/root/system/bin/ares-crypto-guard.sh
+          cat >> recovery/root/init.recovery.mt6893.rc <<'EOS'
+
+          on fs
+              exec -- /system/bin/ares-crypto-guard.sh
+          on post-fs
+              exec -- /system/bin/ares-crypto-guard.sh
+          EOS
+          echo "--- guard 装好了 ---"
+          ls -l recovery/root/system/bin/ares-crypto-guard.sh
+          tail -8 recovery/root/init.recovery.mt6893.rc
+
       - name: 关掉解密（安全模式：不碰密钥库）
         if: ${{ inputs.disable_crypto }}
         run: |
