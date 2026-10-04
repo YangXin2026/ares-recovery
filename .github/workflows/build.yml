@@ -19,6 +19,11 @@ on:
         description: 'Release 标签（留空=自动）'
         required: false
         default: ''
+      disable_crypto:
+        description: 'true = 关掉 recovery 的解密（碰不到 /data/密钥库，绝不会搞坏锁屏）'
+        type: boolean
+        required: true
+        default: true
 
 permissions:
   contents: write
@@ -121,6 +126,29 @@ jobs:
           OF_SPLASH_MAX_SIZE := 8192
           EOF
           ls -l vendorsetup.sh fox_ares.mk
+
+      - name: 关掉解密（安全模式：不碰密钥库）
+        if: ${{ inputs.disable_crypto }}
+        run: |
+          set -x
+          if [ "${{ inputs.variant }}" = "ofox" ]; then D=$HOME/fox_12.1; else D=$HOME/rec; fi
+          cd $D/device/xiaomi/ares
+          cp BoardConfig.mk BoardConfig.mk.bak
+          sed -i 's/^TW_INCLUDE_CRYPTO.*/TW_INCLUDE_CRYPTO := false/' BoardConfig.mk || true
+          sed -i 's/^TW_INCLUDE_FBE.*/TW_INCLUDE_FBE := false/' BoardConfig.mk || true
+          sed -i 's/^TW_INCLUDE_FBE_METADATA_DECRYPT.*/TW_INCLUDE_FBE_METADATA_DECRYPT := false/' BoardConfig.mk || true
+          sed -i 's/^TW_INCLUDE_CRYPTO_FBE.*/TW_INCLUDE_CRYPTO_FBE := false/' BoardConfig.mk || true
+          echo "--- 改动前后差异 ---"; diff -u BoardConfig.mk.bak BoardConfig.mk || true
+          echo "--- 现在这些开关是 ---"; grep -nE 'TW_INCLUDE_CRYPTO|TW_INCLUDE_FBE|METADATA_DECRYPT' BoardConfig.mk || true
+          # 把恢复树自带的 keymaster/gatekeeper 预编件挪走，避免它去碰 TEE
+          rm -rf recovery/root/system/bin/android.hardware.keymaster* || true
+          rm -rf recovery/root/system/bin/android.hardware.gatekeeper* || true
+          ls recovery/root/system/bin/ 2>/dev/null | head -20 || true
+          # 橙狐侧再补一个变量
+          if [ "${{ inputs.variant }}" = "ofox" ]; then
+            echo 'export OF_NO_CRYPTO=1' >> vendorsetup.sh
+            grep -n . vendorsetup.sh || true
+          fi
 
       - name: 编译
         run: |
