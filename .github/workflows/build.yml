@@ -37,15 +37,14 @@ jobs:
       CCACHE_DIR: /home/runner/.ccache
       CCACHE_MAXSIZE: 8G
     steps:
-      - name: 腾空间
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 8192
-          temp-reserve-mb: 2048
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
+      - name: 环境与磁盘（不腾空间：runner 本身有 87G+ 可用）
+        run: |
+          set -x
+          df -h /
+          free -m
+          nproc
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+          echo "start $(date) variant=${{ inputs.variant }} crypto_off=${{ inputs.disable_crypto }}" > $GITHUB_WORKSPACE/artifacts/build.log
 
       - name: 装依赖
         run: |
@@ -63,6 +62,7 @@ jobs:
           git config --global user.email "dsh@example.com"
           git config --global --add safe.directory '*'
           df -h /
+          echo "deps done" >> $GITHUB_WORKSPACE/artifacts/build.log
 
       - name: 取源码（TWRP 12.1 最小清单）
         if: ${{ inputs.variant == 'twrp' }}
