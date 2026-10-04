@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       variant:
-        description: 'twrp = 稳妥重编；ofox = 自移植橙狐(磁盘吃紧可能挂)'
+        description: 'twrp = TWRP 12.1 最小清单；ofox = OrangeFox fox_12.1（官方 sync 脚本）'
         required: true
         default: 'twrp'
       tree_repo:
@@ -12,7 +12,7 @@ on:
         required: true
         default: 'AYIKxD/recovery_device_xiaomi_ares'
       tree_branch:
-        description: '设备树分支（Twrp-HyperOS 是出过成品的那个）'
+        description: '设备树分支'
         required: true
         default: 'Twrp-HyperOS'
       release_tag:
@@ -49,54 +49,54 @@ jobs:
           sudo apt-get install -y git curl python3 openjdk-11-jdk zip unzip ccache
           mkdir -p ~/bin
           curl -fL --max-time 120 -o ~/bin/repo https://storage.googleapis.com/git-repo-downloads/repo \
-            || curl -fL --max-time 120 -o ~/bin/repo https://raw.githubusercontent.com/GerritCodeReview/git-repo/stable/repo \
-            || curl -fL --max-time 120 -o ~/bin/repo https://gh-proxy.com/https://raw.githubusercontent.com/GerritCodeReview/git-repo/stable/repo
+            || curl -fL --max-time 120 -o ~/bin/repo https://raw.githubusercontent.com/GerritCodeReview/git-repo/stable/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
           export PATH="$HOME/bin:$PATH"
-          head -3 ~/bin/repo
-          python3 -c "compile(open('$HOME/bin/repo').read(),'repo','exec'); print('repo script OK')"
+          python3 -c "compile(open('$HOME/bin/repo').read(),'repo','exec'); print('repo OK')"
           git config --global user.name "dsh-bot"
           git config --global user.email "dsh@example.com"
           git config --global --add safe.directory '*'
-
-      - name: 显示磁盘
-        run: df -h /
+          df -h /
 
       - name: 取源码（TWRP 12.1 最小清单）
+        if: ${{ inputs.variant == 'twrp' }}
         run: |
           set -x
           export PATH="$HOME/bin:$PATH"
-          repo --version || true
           mkdir -p ~/rec && cd ~/rec
           repo init --depth=1 --no-repo-verify -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1
-          ls -la .repo/manifests/ | head
-          repo sync -c -j4 --no-clone-bundle --no-tags 2>&1 | tail -50
-          echo "=== 顶层目录 ==="; ls | head -30
-          test -d vendor/twrp && echo "vendor/twrp OK" || echo "!! 没有 vendor/twrp"
+          repo sync -c -j4 --no-clone-bundle --no-tags 2>&1 | tail -30
+          ls | head -20
           df -h /
 
-      - name: 橙狐模式：换 OrangeFox 源码（fox_12.1）
+      - name: 取源码（OrangeFox 官方 sync，fox_12.1）
         if: ${{ inputs.variant == 'ofox' }}
         run: |
-          cd ~/rec
-          rm -rf vendor/twrp bootable/recovery
-          git clone --depth 1 https://gitlab.com/OrangeFox/vendor/recovery.git -b fox_12.1 vendor/recovery
-          git clone --depth 1 https://gitlab.com/OrangeFox/bootable/recovery.git -b fox_12.1 bootable/recovery
+          set -x
+          export PATH="$HOME/bin:$PATH"
+          mkdir -p ~/fox_sync && cd ~/fox_sync
+          git clone --depth 1 https://gitlab.com/OrangeFox/sync.git
+          cd sync
+          chmod +x orangefox_sync.sh
+          ./orangefox_sync.sh --branch 12.1 --path "$HOME/fox_12.1" 2>&1 | tail -40
+          ls ~/fox_12.1 | head -20
           df -h /
 
       - name: 放设备树
         run: |
-          cd ~/rec
+          set -x
+          if [ "${{ inputs.variant }}" = "ofox" ]; then D=$HOME/fox_12.1; else D=$HOME/rec; fi
+          cd $D
           git clone --depth 1 -b "${{ inputs.tree_branch }}" https://github.com/${{ inputs.tree_repo }} device/xiaomi/ares
           ls device/xiaomi/ares | head -30
-          echo "--- BoardConfig 关键项 ---"
-          grep -E "RECOVERY_AS_BOOT|BOOTIMAGE_PARTITION_SIZE|DTB_OFFSET|RAMDISK_OFFSET|PREBUILT|VIRTUAL_AB|SUPER_PARTITION_SIZE" device/xiaomi/ares/BoardConfig.mk || true
+          grep -E "RECOVERY_AS_BOOT|BOOTIMAGE_PARTITION_SIZE|PREBUILT_KERNEL|VIRTUAL_AB|SUPER_PARTITION_SIZE" device/xiaomi/ares/BoardConfig.mk || true
 
       - name: 橙狐模式：加 fox_ares.mk 与 vendorsetup.sh
         if: ${{ inputs.variant == 'ofox' }}
         run: |
-          cd ~/rec/device/xiaomi/ares
+          set -x
+          cd ~/fox_12.1/device/xiaomi/ares
           cat > vendorsetup.sh <<'EOF'
           export FOX_AB_DEVICE=1
           export FOX_VIRTUAL_AB_DEVICE=1
@@ -108,14 +108,12 @@ jobs:
           export LC_ALL=C
           EOF
           cat > fox_ares.mk <<'EOF'
-          # OrangeFox ares 板级变量（OF_*）
           OF_SCREEN_H := 2400
           OF_STATUS_H := 76
           OF_STATUS_INDENT_LEFT := 48
           OF_STATUS_INDENT_RIGHT := 48
           OF_HIDE_NOTCH := 1
           OF_CLOCK_POS := 1
-          OF_USE_GREEN_LED := 0
           OF_FLASHLIGHT_ENABLE := 1
           OF_ENABLE_ALL_PARTITION_TOOLS := 1
           OF_PATCH_AVB20 := 1
@@ -123,28 +121,32 @@ jobs:
           OF_SPLASH_MAX_SIZE := 8192
           EOF
           ls -l vendorsetup.sh fox_ares.mk
-          df -h /
 
       - name: 编译
         run: |
-          cd ~/rec
+          set -x
+          if [ "${{ inputs.variant }}" = "ofox" ]; then D=$HOME/fox_12.1; else D=$HOME/rec; fi
+          cd $D
           export PATH=/usr/lib/ccache:$PATH
           source build/envsetup.sh
           lunch twrp_ares-eng
-          mka adbd bootimage -j4 2>&1 | tail -80
-          echo "=== 产物 ==="
-          ls -lh out/target/product/ares/*.img 2>/dev/null || ls -lhR out/target/product/ares/ | head -40
+          mka adbd bootimage -j4 2>&1 | tail -60
+          echo "=== out 目录 ==="
+          find out/target/product/ares -maxdepth 1 -name '*.img' -o -maxdepth 1 -name '*.zip' 2>/dev/null | head
+          ls -lh out/target/product/ares/ 2>/dev/null | head -20
+          df -h /
 
       - name: 收集产物
         run: |
+          if [ "${{ inputs.variant }}" = "ofox" ]; then D=$HOME/fox_12.1; else D=$HOME/rec; fi
           mkdir -p $GITHUB_WORKSPACE/artifacts
-          cp -v ~/rec/out/target/product/ares/*.img $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
-          cp -v ~/rec/out/target/product/ares/recovery.img $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
-          ls -lh $GITHUB_WORKSPACE/artifacts
-          ( cd $GITHUB_WORKSPACE/artifacts && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt )
+          cp -v $D/out/target/product/ares/*.img $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
+          cp -v $D/out/target/product/ares/*.zip $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
+          ls -lh $GITHUB_WORKSPACE/artifacts || true
+          ( cd $GITHUB_WORKSPACE/artifacts && sha256sum * > SHA256SUMS.txt 2>/dev/null && cat SHA256SUMS.txt ) || true
 
       - name: 发 Release
-        if: ${{ hashFiles('artifacts/*.img') != '' }}
+        if: ${{ hashFiles('artifacts/*.img') != '' || hashFiles('artifacts/*.zip') != '' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag != '' && inputs.release_tag || format('{0}-{1}', inputs.variant, github.run_number) }}
@@ -152,7 +154,7 @@ jobs:
           body: |
             设备树: ${{ inputs.tree_repo }}@${{ inputs.tree_branch }}
             变体: ${{ inputs.variant }}
-            目标: ares (Redmi K40 Gaming / MT6893)
+            目标: ares (Redmi K40 Gaming / MT6893, recovery-as-boot)
           files: artifacts/*
 
       - name: 备用 artifact
