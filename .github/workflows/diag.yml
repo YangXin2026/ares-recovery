@@ -1,0 +1,49 @@
+name: diag (repo init probe)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  diag:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: probe
+        run: |
+          exec > >(tee /tmp/diag.log) 2>&1
+          set -x
+          echo "=== env ==="
+          df -h
+          free -m
+          nproc
+          echo "=== network ==="
+          curl -sI --max-time 20 https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp | head -3
+          curl -sI --max-time 20 https://storage.googleapis.com/git-repo-downloads/repo | head -3
+          curl -sI --max-time 20 https://gitlab.com/OrangeFox/sync | head -3
+          git --version; python3 --version
+          echo "=== get repo tool ==="
+          mkdir -p "$HOME/bin"
+          curl -fL --max-time 60 -o "$HOME/bin/repo" https://storage.googleapis.com/git-repo-downloads/repo && echo "repo downloaded"
+          chmod +x "$HOME/bin/repo"
+          head -3 "$HOME/bin/repo"
+          export PATH="$HOME/bin:$PATH"
+          repo --version || echo "repo --version rc=$?"
+          echo "=== repo init ==="
+          mkdir -p /tmp/rec && cd /tmp/rec
+          repo init --depth=1 --no-repo-verify -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1 || echo "INIT RC=$?"
+          ls -la .repo 2>/dev/null | head
+          echo "=== repo sync (partial) ==="
+          timeout 300 repo sync -c -j4 --no-clone-bundle --no-tags || echo "SYNC RC=$?"
+          df -h
+          echo "=== done ==="
+      - name: publish log
+        if: always()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: diag-logs
+          name: "diag logs (latest)"
+          body: "run ${{ github.run_number }}"
+          files: /tmp/diag.log
+          prerelease: true
