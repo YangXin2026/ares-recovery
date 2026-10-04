@@ -44,25 +44,36 @@ jobs:
 
       - name: 装依赖
         run: |
+          set -x
           sudo apt-get update
-          sudo apt-get install -y git curl python3 openjdk-11-jdk zip unzip ccache imagemagick
+          sudo apt-get install -y git curl python3 openjdk-11-jdk zip unzip ccache
           mkdir -p ~/bin
-          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo || \
-          curl -s https://gh-proxy.com/https://raw.githubusercontent.com/GerritCodeReview/git-repo/main/repo > ~/bin/repo
+          curl -fL --max-time 120 -o ~/bin/repo https://storage.googleapis.com/git-repo-downloads/repo \
+            || curl -fL --max-time 120 -o ~/bin/repo https://raw.githubusercontent.com/GerritCodeReview/git-repo/stable/repo \
+            || curl -fL --max-time 120 -o ~/bin/repo https://gh-proxy.com/https://raw.githubusercontent.com/GerritCodeReview/git-repo/stable/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
+          export PATH="$HOME/bin:$PATH"
+          head -3 ~/bin/repo
+          python3 -c "compile(open('$HOME/bin/repo').read(),'repo','exec'); print('repo script OK')"
           git config --global user.name "dsh-bot"
           git config --global user.email "dsh@example.com"
+          git config --global --add safe.directory '*'
 
       - name: 显示磁盘
         run: df -h /
 
       - name: 取源码（TWRP 12.1 最小清单）
         run: |
+          set -x
+          export PATH="$HOME/bin:$PATH"
+          repo --version || true
           mkdir -p ~/rec && cd ~/rec
-          repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1
-          repo sync -c -j4 --no-clone-bundle --no-tags
-          ls -d vendor/twrp 2>/dev/null && echo "TWRP vendor ok"
+          repo init --depth=1 --no-repo-verify -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1
+          ls -la .repo/manifests/ | head
+          repo sync -c -j4 --no-clone-bundle --no-tags 2>&1 | tail -50
+          echo "=== 顶层目录 ==="; ls | head -30
+          test -d vendor/twrp && echo "vendor/twrp OK" || echo "!! 没有 vendor/twrp"
           df -h /
 
       - name: 橙狐模式：换 OrangeFox 源码（fox_12.1）
