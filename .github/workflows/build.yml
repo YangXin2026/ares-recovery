@@ -1,0 +1,152 @@
+name: Build ares recovery (TWRP / OrangeFox)
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'twrp = 稳妥重编；ofox = 自移植橙狐(磁盘吃紧可能挂)'
+        required: true
+        default: 'twrp'
+      tree_repo:
+        description: '设备树仓库'
+        required: true
+        default: 'AYIKxD/recovery_device_xiaomi_ares'
+      tree_branch:
+        description: '设备树分支（Twrp-HyperOS 是出过成品的那个）'
+        required: true
+        default: 'Twrp-HyperOS'
+      release_tag:
+        description: 'Release 标签（留空=自动）'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      ALLOW_MISSING_DEPENDENCIES: 'true'
+      LC_ALL: C
+      CCACHE_DIR: /home/runner/.ccache
+      CCACHE_MAXSIZE: 8G
+    steps:
+      - name: 腾空间
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: 装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl python3 openjdk-11-jdk zip unzip ccache imagemagick
+          mkdir -p ~/bin
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo || \
+          curl -s https://gh-proxy.com/https://raw.githubusercontent.com/GerritCodeReview/git-repo/main/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+          git config --global user.name "dsh-bot"
+          git config --global user.email "dsh@example.com"
+
+      - name: 显示磁盘
+        run: df -h /
+
+      - name: 取源码（TWRP 12.1 最小清单）
+        run: |
+          mkdir -p ~/rec && cd ~/rec
+          repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1
+          repo sync -c -j4 --no-clone-bundle --no-tags
+          ls -d vendor/twrp 2>/dev/null && echo "TWRP vendor ok"
+          df -h /
+
+      - name: 橙狐模式：换 OrangeFox 源码（fox_12.1）
+        if: ${{ inputs.variant == 'ofox' }}
+        run: |
+          cd ~/rec
+          rm -rf vendor/twrp bootable/recovery
+          git clone --depth 1 https://gitlab.com/OrangeFox/vendor/recovery.git -b fox_12.1 vendor/recovery
+          git clone --depth 1 https://gitlab.com/OrangeFox/bootable/recovery.git -b fox_12.1 bootable/recovery
+          df -h /
+
+      - name: 放设备树
+        run: |
+          cd ~/rec
+          git clone --depth 1 -b "${{ inputs.tree_branch }}" https://github.com/${{ inputs.tree_repo }} device/xiaomi/ares
+          ls device/xiaomi/ares | head -30
+          echo "--- BoardConfig 关键项 ---"
+          grep -E "RECOVERY_AS_BOOT|BOOTIMAGE_PARTITION_SIZE|DTB_OFFSET|RAMDISK_OFFSET|PREBUILT|VIRTUAL_AB|SUPER_PARTITION_SIZE" device/xiaomi/ares/BoardConfig.mk || true
+
+      - name: 橙狐模式：加 fox_ares.mk 与 vendorsetup.sh
+        if: ${{ inputs.variant == 'ofox' }}
+        run: |
+          cd ~/rec/device/xiaomi/ares
+          cat > vendorsetup.sh <<'EOF'
+          export FOX_AB_DEVICE=1
+          export FOX_VIRTUAL_AB_DEVICE=1
+          export FOX_BUILD_DEVICE=ares
+          export OF_DEFAULT_KEYMASTER_VERSION=4.0
+          export OF_FORCE_PREBUILT_KERNEL=1
+          export OF_USE_LZMA_COMPRESSION=1
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+          EOF
+          cat > fox_ares.mk <<'EOF'
+          # OrangeFox ares 板级变量（OF_*）
+          OF_SCREEN_H := 2400
+          OF_STATUS_H := 76
+          OF_STATUS_INDENT_LEFT := 48
+          OF_STATUS_INDENT_RIGHT := 48
+          OF_HIDE_NOTCH := 1
+          OF_CLOCK_POS := 1
+          OF_USE_GREEN_LED := 0
+          OF_FLASHLIGHT_ENABLE := 1
+          OF_ENABLE_ALL_PARTITION_TOOLS := 1
+          OF_PATCH_AVB20 := 1
+          OF_QUICK_BACKUP_LIST := /boot;/data;
+          OF_SPLASH_MAX_SIZE := 8192
+          EOF
+          ls -l vendorsetup.sh fox_ares.mk
+          df -h /
+
+      - name: 编译
+        run: |
+          cd ~/rec
+          export PATH=/usr/lib/ccache:$PATH
+          source build/envsetup.sh
+          lunch twrp_ares-eng
+          mka adbd bootimage -j4 2>&1 | tail -80
+          echo "=== 产物 ==="
+          ls -lh out/target/product/ares/*.img 2>/dev/null || ls -lhR out/target/product/ares/ | head -40
+
+      - name: 收集产物
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+          cp -v ~/rec/out/target/product/ares/*.img $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
+          cp -v ~/rec/out/target/product/ares/recovery.img $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
+          ls -lh $GITHUB_WORKSPACE/artifacts
+          ( cd $GITHUB_WORKSPACE/artifacts && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt )
+
+      - name: 发 Release
+        if: ${{ hashFiles('artifacts/*.img') != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag != '' && inputs.release_tag || format('{0}-{1}', inputs.variant, github.run_number) }}
+          name: "ares ${{ inputs.variant }} (tree ${{ inputs.tree_branch }})"
+          body: |
+            设备树: ${{ inputs.tree_repo }}@${{ inputs.tree_branch }}
+            变体: ${{ inputs.variant }}
+            目标: ares (Redmi K40 Gaming / MT6893)
+          files: artifacts/*
+
+      - name: 备用 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ares-recovery-${{ inputs.variant }}
+          path: artifacts/*
+          compression-level: 9
