@@ -69,24 +69,31 @@ jobs:
         run: |
           set -x
           export PATH="$HOME/bin:$PATH"
-          mkdir -p ~/rec && cd ~/rec
-          repo init --depth=1 --no-repo-verify -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1
-          repo sync -c -j4 --no-clone-bundle --no-tags 2>&1 | tail -30
-          ls | head -20
-          df -h /
+          mkdir -p ~/rec $GITHUB_WORKSPACE/artifacts && cd ~/rec
+          {
+            df -h
+            repo init --depth=1 --no-repo-verify -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1
+            repo sync -c -j4 --no-clone-bundle --no-tags
+            ls | head -20
+            df -h
+          } 2>&1 | tee -a $GITHUB_WORKSPACE/artifacts/build.log
+          test -d vendor/twrp && echo "vendor/twrp OK" | tee -a $GITHUB_WORKSPACE/artifacts/build.log
 
       - name: 取源码（OrangeFox 官方 sync，fox_12.1）
         if: ${{ inputs.variant == 'ofox' }}
         run: |
           set -x
           export PATH="$HOME/bin:$PATH"
-          mkdir -p ~/fox_sync && cd ~/fox_sync
-          git clone --depth 1 https://gitlab.com/OrangeFox/sync.git
-          cd sync
-          chmod +x orangefox_sync.sh
-          ./orangefox_sync.sh --branch 12.1 --path "$HOME/fox_12.1" 2>&1 | tail -40
-          ls ~/fox_12.1 | head -20
-          df -h /
+          mkdir -p ~/fox_sync $GITHUB_WORKSPACE/artifacts && cd ~/fox_sync
+          {
+            df -h
+            git clone --depth 1 https://gitlab.com/OrangeFox/sync.git
+            cd sync
+            chmod +x orangefox_sync.sh
+            ./orangefox_sync.sh --branch 12.1 --path "$HOME/fox_12.1"
+            ls ~/fox_12.1 | head -20
+            df -h
+          } 2>&1 | tee -a $GITHUB_WORKSPACE/artifacts/build.log
 
       - name: 放设备树
         run: |
@@ -185,9 +192,22 @@ jobs:
             目标: ares (Redmi K40 Gaming / MT6893, recovery-as-boot)
           files: artifacts/*
 
+      - name: 发布日志（无论成败，走这个 release 拿日志）
+        if: always()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-logs
+          name: "CI logs (latest)"
+          body: "每次构建的日志都会覆盖到这个 release。run ${{ github.run_number }} / ${{ inputs.variant }}"
+          files: artifacts/build.log
+          prerelease: true
+
       - name: 备用 artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ares-recovery-${{ inputs.variant }}
-          path: artifacts/*
+          name: ares-recovery-${{ inputs.variant }}-run${{ github.run_number }}
+          path: |
+            artifacts/*
           compression-level: 9
+          if-no-files-found: warn
