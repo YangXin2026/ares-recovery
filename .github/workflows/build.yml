@@ -90,6 +90,12 @@ jobs:
             git clone --depth 1 https://gitlab.com/OrangeFox/sync.git
             cd sync
             chmod +x orangefox_sync.sh
+            echo "--- sync 仓库根目录 ---"; ls -l | head -20
+            echo "--- patches/ ---"; ls -l patches/ 2>/dev/null | head -20
+            echo "--- 脚本里对 diff 的引用 ---"; grep -n 'diff' orangefox_sync.sh | head -20
+            cp -v patches/*.diff . 2>/dev/null || true
+            cp -v legacy/patches/*.diff . 2>/dev/null || true
+            echo "--- 根目录里的 diff（脚本期望的位置）---"; ls -l *.diff 2>/dev/null || echo "(空)"
             ./orangefox_sync.sh --branch 12.1 --path "$HOME/fox_12.1"
             ls ~/fox_12.1 | head -20
             df -h
