@@ -355,9 +355,21 @@ jobs:
           fi
           cd $D
           export PATH=/usr/lib/ccache:$PATH
+          # 关键：envsetup.sh / orangefox_envsetup 里有一堆返回非 0 的无害命令，
+          # GitHub 默认 bash -e 会让整个步骤当场被杀（日志停在 source 中间、一行都没编）-> 先关 -e
+          set +e
           source build/envsetup.sh
+          echo "envsetup rc=$?"
           echo "lunch target = $LUNCH"
-          (lunch $LUNCH) || { echo "!! lunch 失败，列出可用目标："; lunch 2>&1 | head -40; exit 1; }
+          lunch $LUNCH
+          LRC=$?
+          echo "lunch rc=$LRC"
+          if [ "$LRC" != "0" ]; then
+            echo "!! lunch 失败，列出可用目标："
+            lunch 2>&1 | head -60
+            exit 1
+          fi
+          set -e
           mka adbd bootimage -j4 2>&1 | tail -60
           echo "=== out 目录 ==="
           find out/target/product/ares -maxdepth 1 -name '*.img' -o -maxdepth 1 -name '*.zip' 2>/dev/null | head
