@@ -134,7 +134,7 @@ jobs:
           EOF
           ls -l vendorsetup.sh fox_ares.mk
 
-      - name: 加装解密守卫（能解就解，不能解就自动锁死）
+      - name: 加装解密守卫（能解就解，不能解就锁死；手输密码上限 3 次）
         if: ${{ inputs.disable_crypto == false }}
         run: |
           set -x
@@ -143,36 +143,115 @@ jobs:
           mkdir -p recovery/root/system/bin
           cat > recovery/root/system/bin/ares-crypto-guard.sh <<'EOS'
           #!/system/bin/sh
-          # 判定 ROM 的 keymaster 代际：
-          #   AIDL keymint 在（A15/A16）→ 我们这套 HIDL keymaster@4.0 解不开它的 key blob，
-          #   直接把自己删掉，让解密起不来（不碰 /data、不碰 key blob = 绝对安全）
-          #   只有 HIDL keymaster 时代（A13 一类）→ 放开解密
+          # ares 守卫式解密策略（用户定的规则）：
+          #   1) 先备份 /metadata（160K 左右），动密钥库之前留退路
+          #   2) 判定 ROM 世代：AIDL keymint（一般 A14/15/16）→ 我们这套 HIDL keymaster@4.0
+          #      根本包不开它的 key blob，直接锁死，绝不尝试（不碰 /data、不碰 key blob）
+          #   3) HIDL 世代（A13 一类）→ 放开，允许用户手动输密码
+          #   4) 手动尝试由 watchdog 计数，连续 3 次不对就把解密彻底关掉
           LOG=/tmp/ares-crypto-guard.log
-          echo "guard run $(date)" >> $LOG
-          if ls /vendor/bin/hw 2>/dev/null | grep -qiE 'keymint' \
-             || grep -qiE 'keymint' /vendor/etc/vintf/manifest.xml 2>/dev/null; then
-              echo "-> vendor is AIDL keymint: LOCK (remove our HIDL keymaster)" >> $LOG
-              rm -f /system/bin/android.hardware.keymaster@4.0-service.beanpod
-              rm -f /system/bin/android.hardware.keymaster@4.0-service.mitee
-              rm -f /system/bin/android.hardware.gatekeeper@1.0-service
-              stop android.hardware.keymaster@4.0-service.beanpod 2>/dev/null
-              stop android.hardware.keymaster@4.0-service.mitee 2>/dev/null
-              echo "locked" > /tmp/ares-crypto-locked
+          STATE=/tmp/ares-crypto-state
+          CNT=/tmp/ares-crypto-fails
+          mkdir -p /tmp; : > $LOG
+          log() { echo "[guard] $*" >> $LOG; }
+          log "run $(date)"
+
+          # 备份 metadata（只做一次）
+          if [ ! -f /tmp/metadata.bak ]; then
+            if dd if=/dev/block/by-name/metadata of=/tmp/metadata.bak bs=4096 2>/dev/null; then
+              log "metadata 已备份 $(wc -c < /tmp/metadata.bak) B"
+            else
+              log "metadata 备份失败（继续，不影响策略）"
+            fi
+          fi
+
+          # ROM 世代判定
+          VREL=$(getprop ro.vendor.build.version.release)
+          SDK=$(getprop ro.vendor.build.version.sdk)
+          if [ -z "$VREL" ] && [ -f /vendor/build.prop ]; then
+            VREL=$(grep -m1 '^ro.vendor.build.version.release=' /vendor/build.prop | cut -d= -f2)
+            SDK=$(grep -m1 '^ro.vendor.build.version.sdk=' /vendor/build.prop | cut -d= -f2)
+          fi
+          KEYMINT=0
+          ls /vendor/bin/hw 2>/dev/null | grep -qi keymint && KEYMINT=1
+          grep -qiE 'keymint' /vendor/etc/vintf/manifest.xml 2>/dev/null && KEYMINT=1
+          log "rom: release=$VREL sdk=$SDK keymint=$KEYMINT"
+
+          lock_crypto() {
+            log "-> 锁死解密：移走 recovery 里的 keymaster/gatekeeper，让它根本没法尝试"
+            for s in android.hardware.keymaster@4.0-service.beanpod \
+                     android.hardware.keymaster@4.0-service.mitee \
+                     android.hardware.keymaster@4.0-service \
+                     android.hardware.gatekeeper@1.0-service; do
+              rm -f /system/bin/$s
+              stop $s 2>/dev/null
+            done
+            echo lock > $STATE
+          }
+
+          # 有 SDK 就按 SDK 判；没有就靠 keymint 痕迹判
+          if [ "$KEYMINT" = "1" ] || { [ -n "$SDK" ] && [ "$SDK" -ge 33 ] && [ "$KEYMINT" = "1" ]; }; then
+            log "-> AIDL keymint / A14+ 世代：不尝试解密"
+            lock_crypto
+          elif [ -n "$SDK" ] && [ "$SDK" -ge 34 ]; then
+            log "-> SDK=$SDK (A14+)：不尝试解密"
+            lock_crypto
           else
-              echo "-> vendor looks HIDL keymaster: ALLOW decryption" >> $LOG
+            echo allow > $STATE
+            echo 0 > $CNT
+            log "-> HIDL 世代：允许用户手动输密码（最多 3 次）"
           fi
           EOS
           chmod 755 recovery/root/system/bin/ares-crypto-guard.sh
+
+          cat > recovery/root/system/bin/ares-crypto-watchdog.sh <<'EOS'
+          #!/system/bin/sh
+          # 盯着 TWRP 日志数解密失败次数：连续 3 次不对 -> 锁死解密并留下提示
+          LOG=/tmp/ares-crypto-guard.log
+          CNT=/tmp/ares-crypto-fails
+          STATE=/tmp/ares-crypto-state
+          [ -f "$STATE" ] || exit 0
+          [ "$(cat $STATE 2>/dev/null)" = "allow" ] || exit 0
+          [ -f "$CNT" ] || echo 0 > $CNT
+          i=0
+          while [ $i -lt 900 ]; do
+            sleep 2; i=$((i + 1))
+            [ "$(cat $STATE 2>/dev/null)" = "lock" ] && exit 0
+            if [ -f /tmp/recovery.log ]; then
+              n=$(grep -ciE 'Failed to decrypt|password failed|Unable to decrypt|decrypt.*failed' /tmp/recovery.log 2>/dev/null)
+              [ -z "$n" ] && n=0
+              echo "$n" > $CNT
+              if [ "$n" -ge 3 ]; then
+                echo "[watchdog] 解密连续失败 $n 次 -> 关掉解密功能" >> $LOG
+                for s in android.hardware.keymaster@4.0-service.beanpod \
+                         android.hardware.keymaster@4.0-service.mitee \
+                         android.hardware.keymaster@4.0-service \
+                         android.hardware.gatekeeper@1.0-service; do
+                  rm -f /system/bin/$s
+                  stop $s 2>/dev/null
+                done
+                echo lock > $STATE
+                echo "解密已关闭（3 次密码错误）" > /tmp/ares-crypto-msg
+                exit 0
+              fi
+            fi
+          done
+          EOS
+          chmod 755 recovery/root/system/bin/ares-crypto-watchdog.sh
+
           cat >> recovery/root/init.recovery.mt6893.rc <<'EOS'
 
+          on early-init
+              exec -- /system/bin/ares-crypto-guard.sh
           on fs
               exec -- /system/bin/ares-crypto-guard.sh
           on post-fs
               exec -- /system/bin/ares-crypto-guard.sh
+              exec -- /system/bin/ares-crypto-watchdog.sh
           EOS
           echo "--- guard 装好了 ---"
-          ls -l recovery/root/system/bin/ares-crypto-guard.sh
-          tail -8 recovery/root/init.recovery.mt6893.rc
+          ls -l recovery/root/system/bin/ares-crypto-*.sh
+          tail -10 recovery/root/init.recovery.mt6893.rc
 
       - name: 关掉解密（安全模式：不碰密钥库）
         if: ${{ inputs.disable_crypto }}
