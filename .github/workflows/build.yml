@@ -144,6 +144,46 @@ jobs:
           EOF
           ls -l vendorsetup.sh fox_ares.mk
 
+      - name: 加功能（中文/MTP+OTG/备份恢复/文件系统工具/状态栏与高级重启）+ 我们的署名
+        run: |
+          set -x
+          if [ "${{ inputs.variant }}" = "ofox" ]; then D=$HOME/fox_12.1; else D=$HOME/rec; fi
+          cd $D
+          # 先看看这版 recovery 源码里到底认哪些开关（免得写了不存在的）
+          for f in TW_EXTRA_LANGUAGES TW_DEFAULT_LANGUAGE TW_INCLUDE_NTFS_3G TW_INCLUDE_FUSE_EXFAT \
+                   TW_INCLUDE_LPTOOLS TW_INCLUDE_REPACKTOOLS TW_INCLUDE_RESETPROP TW_INCLUDE_LIBRESETPROP \
+                   TW_INCLUDE_FASTBOOTD TW_HAS_EDL_MODE TW_HAS_DOWNLOAD_MODE TW_EXTERNAL_STORAGE_PATH \
+                   TW_SCREEN_BLANK_ON_BOOT TW_USE_TOOLBOX TW_HAS_MTP TW_INCLUDE_MTP TW_DEVICE_VERSION; do
+            n=$(grep -rl "$f" bootable/recovery/ 2>/dev/null | wc -l)
+            echo "  flag $f -> $n 处引用"
+          done
+          BC=device/xiaomi/ares/BoardConfig.mk
+          cat > /tmp/twr_flags <<'EOF'
+
+          # ---- YangXin2026 定制批次 ----
+          TW_DEVICE_VERSION := YangXin2026
+          TW_EXTRA_LANGUAGES := true
+          TW_DEFAULT_LANGUAGE := zh_CN
+          TW_INCLUDE_NTFS_3G := true
+          TW_INCLUDE_FUSE_EXFAT := true
+          TW_INCLUDE_LPTOOLS := true
+          TW_INCLUDE_REPACKTOOLS := true
+          TW_INCLUDE_RESETPROP := true
+          TW_INCLUDE_LIBRESETPROP := true
+          TW_INCLUDE_FASTBOOTD := true
+          TW_HAS_EDL_MODE := true
+          TW_HAS_DOWNLOAD_MODE := true
+          TW_SCREEN_BLANK_ON_BOOT := true
+          TW_USE_TOOLBOX := true
+          TW_EXTERNAL_STORAGE_PATH := "/usb-otg"
+          TW_EXTERNAL_STORAGE_MOUNT_POINT := "usb-otg"
+          EOF
+          # heredoc 内容带 YAML 缩进，去掉每行前导空格再写进 Makefile（Makefile 对前导空格敏感）
+          sed 's/^[[:space:]]*//' /tmp/twr_flags >> $BC
+          echo "--- 追加后（尾部 30 行）---"
+          tail -30 $BC
+          grep -n 'TW_DEVICE_VERSION' $BC
+
       - name: 加装解密守卫（能解就解，不能解就锁死；手输密码上限 3 次）
         if: ${{ inputs.disable_crypto == false }}
         run: |
