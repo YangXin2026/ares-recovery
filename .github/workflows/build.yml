@@ -329,11 +329,18 @@ jobs:
       - name: 编译
         run: |
           set -x
-          if [ "${{ inputs.variant }}" = "ofox" ]; then D=$HOME/fox_12.1; else D=$HOME/rec; fi
+          if [ "${{ inputs.variant }}" = "ofox" ]; then
+            D=$HOME/fox_12.1
+            LUNCH=fox_ares-eng
+          else
+            D=$HOME/rec
+            LUNCH=twrp_ares-eng
+          fi
           cd $D
           export PATH=/usr/lib/ccache:$PATH
           source build/envsetup.sh
-          lunch twrp_ares-eng
+          echo "lunch target = $LUNCH"
+          (lunch $LUNCH) || { echo "!! lunch 失败，列出可用目标："; lunch 2>&1 | head -40; exit 1; }
           mka adbd bootimage -j4 2>&1 | tail -60
           echo "=== out 目录 ==="
           find out/target/product/ares -maxdepth 1 -name '*.img' -o -maxdepth 1 -name '*.zip' 2>/dev/null | head
