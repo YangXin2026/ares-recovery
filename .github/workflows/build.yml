@@ -103,6 +103,16 @@ jobs:
           git clone --depth 1 -b "${{ inputs.tree_branch }}" https://github.com/${{ inputs.tree_repo }} device/xiaomi/ares
           ls device/xiaomi/ares | head -30
           grep -E "RECOVERY_AS_BOOT|BOOTIMAGE_PARTITION_SIZE|PREBUILT_KERNEL|VIRTUAL_AB|SUPER_PARTITION_SIZE" device/xiaomi/ares/BoardConfig.mk || true
+          # 署我们的名：TWRP 显示的 "3.7.1_12-by XXX" 里 XXX = TW_DEVICE_VERSION（设备树里原本写的是树作者）
+          grep -nE 'TW_DEVICE_VERSION|OF_MAINTAINER|FOX_VERSION' device/xiaomi/ares/*.mk || true
+          sed -i '/^TW_DEVICE_VERSION/d' device/xiaomi/ares/BoardConfig.mk || true
+          echo 'TW_DEVICE_VERSION := YangXin2026' >> device/xiaomi/ares/BoardConfig.mk
+          if [ -f device/xiaomi/ares/twrp_ares.mk ]; then
+            sed -i '/TW_DEVICE_VERSION/d' device/xiaomi/ares/twrp_ares.mk || true
+            echo 'TW_DEVICE_VERSION := YangXin2026' >> device/xiaomi/ares/twrp_ares.mk
+          fi
+          echo "--- 署名设置后 ---"
+          grep -rn 'TW_DEVICE_VERSION' device/xiaomi/ares/ || true
 
       - name: 橙狐模式：加 fox_ares.mk 与 vendorsetup.sh
         if: ${{ inputs.variant == 'ofox' }}
@@ -289,6 +299,53 @@ jobs:
           find out/target/product/ares -maxdepth 1 -name '*.img' -o -maxdepth 1 -name '*.zip' 2>/dev/null | head
           ls -lh out/target/product/ares/ 2>/dev/null | head -20
           df -h /
+
+      - name: 产物体检（boot 布局 / ramdisk 压缩格式 —— 起不来全靠这个定位）
+        if: always()
+        run: |
+          set -x
+          if [ "${{ inputs.variant }}" = "ofox" ]; then D=$HOME/fox_12.1; else D=$HOME/rec; fi
+          cd $D || exit 0
+          OUT=$GITHUB_WORKSPACE/artifacts/boot_analysis.txt
+          python3 - "$D" > $OUT 2>&1 <<'PYEOF'
+          import glob, os, struct, sys, zlib
+          root = sys.argv[1]
+          def look(p):
+              b = open(p, 'rb').read()
+              print(f"== {os.path.relpath(p, root)}  {len(b):,} B  head={b[:8].hex()}")
+              if b[:8] != b'ANDROID!':
+                  print("   (不是 boot 镜像；前 16 字节:", b[:16].hex(), ")")
+                  return
+              page = struct.unpack_from('<I', b, 36)[0]
+              ks = struct.unpack_from('<I', b, 8)[0]
+              rs = struct.unpack_from('<I', b, 16)[0]
+              ss = struct.unpack_from('<I', b, 24)[0]
+              hdr = struct.unpack_from('<I', b, 40)[0]
+              dtbsz = struct.unpack_from('<I', b, 64)[0]
+              align = lambda v: ((v + page - 1) // page) * page
+              ce = page + align(ks) + align(rs) + (align(ss) if ss else 0)
+              print(f"   page={page} kernel={ks} ramdisk={rs} second={ss} hdr_ver={hdr} dtb_size@64={dtbsz}")
+              print(f"   content_end={ce}  文件尾部还多 {len(b)-ce:,} B")
+              k = b[page:page+ks]; r = b[page+align(ks):page+align(ks)+rs]
+              print("   kernel  magic:", k[:8].hex(), "(1f8b=gzip)")
+              print("   ramdisk magic:", r[:8].hex(), "(1f8b=gzip / 02214c18=lz4 / fd377a585a00=xz / 070701=裸cpio)")
+              if r[:2] == b'\x1f\x8b':
+                  d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                  try:
+                      out = d.decompress(r, 400 << 20)
+                      print(f"   ramdisk gzip -> {len(out):,} B eof={d.eof} TRAILER={'TRAILER!!!' in out}")
+                  except Exception as e:
+                      print("   ramdisk gzip 解压失败:", e)
+              tail = b[ce:ce+4096]
+              print("   tail(内容终点起) 头 16 字节:", tail[:16].hex(), "(d00dfeed=FDT / d7b7ab1e=DTBO)")
+              print()
+          for pat in ("out/target/product/ares/*.img", "out/target/product/ares/*.zip"):
+              for p in sorted(glob.glob(os.path.join(root, pat))):
+                  look(p)
+          PYEOF
+          cat $OUT
+          echo "--- 额外：设备树预编内核/DTB ---"
+          md5sum device/xiaomi/ares/prebuilt/* 2>/dev/null | tee -a $OUT
 
       - name: 收集产物
         run: |
