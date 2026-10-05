@@ -120,22 +120,17 @@ jobs:
           echo "--- 署名设置后 ---"
           grep -rn 'TW_DEVICE_VERSION' device/xiaomi/ares/ || true
 
-      - name: 橙狐模式：加 fox_ares.mk 与 vendorsetup.sh
+      - name: 橙狐模式：造 fox_ares 产品 + 构建开关
         if: ${{ inputs.variant == 'ofox' }}
         run: |
           set -x
           cd ~/fox_12.1/device/xiaomi/ares
-          cat > vendorsetup.sh <<'EOF'
-          export FOX_AB_DEVICE=1
-          export FOX_VIRTUAL_AB_DEVICE=1
-          export FOX_BUILD_DEVICE=ares
-          export OF_DEFAULT_KEYMASTER_VERSION=4.0
-          export OF_FORCE_PREBUILT_KERNEL=1
-          export OF_USE_LZMA_COMPRESSION=1
-          export ALLOW_MISSING_DEPENDENCIES=true
-          export LC_ALL=C
-          EOF
-          cat > fox_ares.mk <<'EOF'
+          # 1) 橘子要 lunch fox_ares-eng，设备树里只有 twrp_ares 产品 -> 造一个 fox_ares
+          cp twrp_ares.mk fox_ares.mk
+          sed -i 's/PRODUCT_NAME := twrp_ares/PRODUCT_NAME := fox_ares/' fox_ares.mk
+          cat >> fox_ares.mk <<'EOF'
+
+          # ---- YangXin2026 的 OrangeFox 设备配置 ----
           OF_SCREEN_H := 2400
           OF_STATUS_H := 76
           OF_STATUS_INDENT_LEFT := 48
@@ -147,7 +142,23 @@ jobs:
           OF_PATCH_AVB20 := 1
           OF_QUICK_BACKUP_LIST := /boot;/data;
           OF_SPLASH_MAX_SIZE := 8192
+          OF_MAINTAINER := YangXin2026
           EOF
+          sed -i 's#twrp_ares.mk#fox_ares.mk#' AndroidProducts.mk
+          echo "--- AndroidProducts.mk ---"; cat AndroidProducts.mk
+          echo "--- fox_ares.mk 尾部 ---"; tail -20 fox_ares.mk
+          # 2) 橘子构建开关
+          cat > vendorsetup.sh <<'EOF'
+          export FOX_AB_DEVICE=1
+          export FOX_VIRTUAL_AB_DEVICE=1
+          export FOX_BUILD_DEVICE=ares
+          export OF_DEFAULT_KEYMASTER_VERSION=4.0
+          export OF_FORCE_PREBUILT_KERNEL=1
+          export OF_USE_LZMA_COMPRESSION=1
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+          EOF
+          echo "--- vendorsetup.sh ---"; cat vendorsetup.sh
           ls -l vendorsetup.sh fox_ares.mk
 
       - name: 加功能（中文/MTP+OTG/备份恢复/文件系统工具/状态栏与高级重启）+ 我们的署名
