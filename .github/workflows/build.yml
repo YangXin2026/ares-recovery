@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     env:
       ALLOW_MISSING_DEPENDENCIES: 'true'
       LC_ALL: C
@@ -50,7 +50,10 @@ jobs:
         run: |
           set -x
           sudo apt-get update
-          sudo apt-get install -y git curl python3 openjdk-11-jdk zip unzip ccache
+          sudo apt-get install -y git curl python3 zip unzip ccache
+          sudo apt-get install -y openjdk-11-jdk || sudo apt-get install -y openjdk-17-jdk
+          java -version 2>&1 | head -3 || true
+          cat /etc/os-release | head -3
           mkdir -p ~/bin
           curl -fL --max-time 120 -o ~/bin/repo https://storage.googleapis.com/git-repo-downloads/repo \
             || curl -fL --max-time 120 -o ~/bin/repo https://raw.githubusercontent.com/GerritCodeReview/git-repo/stable/repo
