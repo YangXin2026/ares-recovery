@@ -426,6 +426,35 @@ jobs:
           echo "--- 额外：设备树预编内核/DTB ---"
           md5sum device/xiaomi/ares/prebuilt/* 2>/dev/null | tee -a $OUT
 
+      - name: 符号一致性自检 + 收集构建出来的 recovery/库（橘子 run#26 的链接 bug 定位用）
+        if: always()
+        run: |
+          set -x
+          if [ "${{ inputs.variant }}" = "ofox" ]; then D=$HOME/fox_12.1; else D=$HOME/rec; fi
+          cd $D || exit 0
+          P=out/target/product/ares
+          OUT=$GITHUB_WORKSPACE/artifacts/symbol_check.txt
+          echo "=== 构建出来的 recovery / 库 的符号检查 ===" > $OUT
+          echo "--- 找 recovery 二进制 ---" | tee -a $OUT
+          find $P -path '*bin/recovery' -not -path '*/obj/*' 2>/dev/null | tee -a $OUT
+          echo "--- 找 minui 相关库 ---" | tee -a $OUT
+          find $P -name 'libminuitwrp.so' -o -name 'libaosprecovery.so' 2>/dev/null | grep -v '/obj/' | tee -a $OUT
+          mkdir -p $GITHUB_WORKSPACE/artifacts/built
+          for f in $(find $P -path '*bin/recovery' -not -path '*/obj/*' 2>/dev/null | head -1) \
+                   $(find $P -name 'libminuitwrp.so' 2>/dev/null | grep -v '/obj/' | head -1) \
+                   $(find $P -name 'libaosprecovery.so' 2>/dev/null | grep -v '/obj/' | head -1); do
+            if [ -f "$f" ]; then
+              n=$(grep -c res_get_pixel_format "$f" 2>/dev/null); n=${n:-0}
+              m=$(grep -c _Z20res_get_pixel_formatv "$f" 2>/dev/null); m=${m:-0}
+              echo "$(stat -c%s $f) B  name=$n mangled=$m  $f" | tee -a $OUT
+              cp -v "$f" $GITHUB_WORKSPACE/artifacts/built/ || true
+            fi
+          done
+          echo "--- 结论：recovery 若 mangled>=1 而 libminuitwrp.so mangled=0 就是 run#26 那个 bug ---" | tee -a $OUT
+          sha256sum $GITHUB_WORKSPACE/artifacts/built/* 2>/dev/null | tee -a $OUT || true
+          echo "--- 镜像里实际装进去的那份库（如果 build 目录里有 recovery/root）---" | tee -a $OUT
+          find $P -path '*recovery/root*' -name 'libminuitwrp.so' 2>/dev/null | head -3 | tee -a $OUT
+
       - name: 收集产物
         run: |
           if [ "${{ inputs.variant }}" = "ofox" ]; then D=$HOME/fox_12.1; else D=$HOME/rec; fi
