@@ -429,6 +429,7 @@ jobs:
       - name: 符号一致性自检 + 收集构建出来的 recovery/库（橘子 run#26 的链接 bug 定位用）
         if: always()
         run: |
+          set +e
           set -x
           if [ "${{ inputs.variant }}" = "ofox" ]; then D=$HOME/fox_12.1; else D=$HOME/rec; fi
           cd $D || exit 0
@@ -440,15 +441,20 @@ jobs:
           echo "--- 找 minui 相关库 ---" | tee -a $OUT
           find $P -name 'libminuitwrp.so' -o -name 'libaosprecovery.so' 2>/dev/null | grep -v '/obj/' | tee -a $OUT
           mkdir -p $GITHUB_WORKSPACE/artifacts/built
-          for f in $(find $P -path '*bin/recovery' -not -path '*/obj/*' 2>/dev/null | head -1) \
-                   $(find $P -name 'libminuitwrp.so' 2>/dev/null | grep -v '/obj/' | head -1) \
-                   $(find $P -name 'libaosprecovery.so' 2>/dev/null | grep -v '/obj/' | head -1); do
-            if [ -f "$f" ]; then
-              n=$(grep -c res_get_pixel_format "$f" 2>/dev/null); n=${n:-0}
-              m=$(grep -c _Z20res_get_pixel_formatv "$f" 2>/dev/null); m=${m:-0}
-              echo "$(stat -c%s $f) B  name=$n mangled=$m  $f" | tee -a $OUT
-              cp -v "$f" $GITHUB_WORKSPACE/artifacts/built/ || true
-            fi
+          A=$(find $P -path '*bin/recovery' -not -path '*/obj/*' 2>/dev/null | head -1)
+          B=$(find $P -name 'libminuitwrp.so' 2>/dev/null | grep -v '/obj/' | head -1)
+          C=$(find $P -name 'libaosprecovery.so' 2>/dev/null | grep -v '/obj/' | head -1)
+          echo "found: A=$A B=$B C=$C" | tee -a $OUT
+          for f in "$A" "$B" "$C"; do
+            [ -n "$f" ] || continue
+            [ -f "$f" ] || continue
+            sz=$(stat -c%s "$f" 2>/dev/null)
+            n=$(grep -c res_get_pixel_format "$f" 2>/dev/null)
+            [ -n "$n" ] || n=0
+            m=$(grep -c _Z20res_get_pixel_formatv "$f" 2>/dev/null)
+            [ -n "$m" ] || m=0
+            echo "$sz B  name=$n mangled=$m  $f" | tee -a $OUT
+            cp -v "$f" $GITHUB_WORKSPACE/artifacts/built/ 2>/dev/null
           done
           echo "--- 结论：recovery 若 mangled>=1 而 libminuitwrp.so mangled=0 就是 run#26 那个 bug ---" | tee -a $OUT
           sha256sum $GITHUB_WORKSPACE/artifacts/built/* 2>/dev/null | tee -a $OUT || true
